@@ -143,7 +143,12 @@ SYSTEM_PROMPT = (
 
 
 def softmax(logs: list[float]) -> list[float]:
-    exps = [math.exp(x) for x in logs]
+    if not logs or any(math.isnan(x) or x == math.inf for x in logs):
+        raise ValueError("Expected nonempty log probabilities without NaN or +inf")
+    maximum = max(logs)
+    if maximum == -math.inf:
+        raise ValueError("At least one log probability must be finite")
+    exps = [math.exp(x - maximum) for x in logs]
     exp_sum = math.fsum(exps)
     return [x / exp_sum for x in exps]
 
@@ -214,12 +219,6 @@ async def score_criteria(
     return logprobs
 
 
-def _normalize_probs(s: list[float], n: int) -> list[float]:
-    s = [round(x, 2) for x in s[: n - 1]]
-    s.append(1 - math.fsum(s))
-    return s
-
-
 async def answer_question(client: LlamaClient, state: str, q: dict) -> dict:
     qtype = q["type"]
     instructions = render_value(q["instructions"])
@@ -254,8 +253,8 @@ async def answer_question(client: LlamaClient, state: str, q: dict) -> dict:
     n = len(labels)
     logprobs = await score_criteria(client, state, instructions, labels, extra)
 
-    s = _normalize_probs(softmax(logprobs), n)
-    confidence = round(math.exp(max(logprobs)), 2)
+    s = softmax(logprobs)
+    confidence = math.exp(max(logprobs))
 
     if qtype == "noul":
         return {"type": "noul", "noul": s[0]}
