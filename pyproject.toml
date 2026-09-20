@@ -1,0 +1,16 @@
+[project]
+name = "llama-jev-server"
+version = "0.1.0"
+description = "Jev compatible shim for llama-server"
+readme = "README.md"
+authors = [
+    { name = "Henri Vasserman", email = "henv@hot.ee" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "dotenv>=0.9.9",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "uvicorn>=0.53.0",
+]
+
