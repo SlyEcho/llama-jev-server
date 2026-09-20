@@ -57,6 +57,26 @@ The response contains `answers` under the same question keys and token `usage`:
 - `choice`: selected criterion key, probabilities by key, and confidence.
 - `score`: expected zero-based criterion index, a legend, probabilities, and confidence.
 
+## Scoring
+
+Each answer label is tokenized by the upstream server together with a trailing
+newline (without adding or interpreting special tokens). The prompt asks for
+that newline so labels such as `Red` and `Red apple` can be distinguished by
+ending the answer versus continuing it.
+
+The server forces each label's shortest distinguishing token prefix using
+numeric-token GBNF, sums the tokens' **pre-sampling log probabilities**, and
+applies softmax across labels. It always scores at least one token. Identical
+labels share a calculation and receive identical probabilities. Incomplete or
+mismatched upstream generations are rejected.
+
+These are normalized **prefix likelihoods**, not full-answer likelihoods or
+calibrated correctness probabilities. If a newline-containing label remains a
+token prefix of another label, its entire token sequence is scored instead.
+Confidence is the unnormalized likelihood of the highest-scoring prefix.
+Requires a llama.cpp server supporting `/tokenize`, numeric-token grammar
+syntax (`<[123]>`), and pre-sampling logprobs.
+
 ## Tests
 
 Run deterministic tests (no llama server required):

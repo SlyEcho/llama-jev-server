@@ -113,6 +113,24 @@ class LlamaClient:
         resp.raise_for_status()
         return resp.json()["prompt"]
 
+    async def tokenize(self, text: str) -> list[int]:
+        resp = await self.client.post(
+            "/tokenize",
+            json={
+                "model": self.model,
+                "content": text,
+                "add_special": False,
+                "parse_special": False,
+            },
+        )
+        resp.raise_for_status()
+        tokens = resp.json()["tokens"]
+        if not isinstance(tokens, list) or not tokens or any(
+            type(token) is not int or token < 0 for token in tokens
+        ):
+            raise ValueError("Expected a nonempty list of token IDs")
+        return tokens
+
     async def completion(self, prompt: str, **kwargs):
         resp = await self.client.post(
             "/completion",
@@ -138,7 +156,7 @@ class LlamaClient:
 
 SYSTEM_PROMPT = (
     "You are an expert assistant that can give a quick answer to a complex "
-    "question. Answer with only one of the possible choices."
+    "question. Answer with only one of the possible choices, followed by a newline."
 )
 
 
@@ -168,10 +186,35 @@ def render_value(value: str | dict | list) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
-def grammar_for(text: str) -> str:
-    """GGRAU/BNF-style llama.cpp grammar that forces exactly one string."""
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return f'root ::= "{escaped}"'
+def grammar_for(tokens: list[int]) -> str:
+    """Force an exact token sequence using llama.cpp's numeric-token GBNF."""
+    return "root ::= " + " ".join(f"<[{token}]>" for token in tokens)
+
+
+def distinguishing_prefixes(sequences: list[list[int]]) -> list[list[int]]:
+    """Keep at least one token, through the last shared position plus one.
+
+    Identical sequences use the same prefix. If a sequence is itself a prefix
+    of another (possible with embedded newlines), retain its entire sequence.
+    These are prefix likelihoods, not full-answer likelihoods.
+    """
+    unique = {tuple(sequence) for sequence in sequences}
+    prefixes = {}
+    for sequence in unique:
+        if not sequence:
+            raise ValueError("Cannot score an empty token sequence")
+        length = 1
+        for other in unique:
+            if other == sequence:
+                continue
+            shared = 0
+            for a, b in zip(sequence, other):
+                if a != b:
+                    break
+                shared += 1
+            length = max(length, shared + 1)
+        prefixes[sequence] = list(sequence[:length])
+    return [prefixes[tuple(sequence)] for sequence in sequences]
 
 
 async def score_criteria(
@@ -181,10 +224,8 @@ async def score_criteria(
     labels: list[str],
     extra: str = "",
 ) -> list[float]:
-    """Score each label by forcing the model to emit it and reading its logprob."""
+    """Sum pre-sampling logprobs through each label's distinguishing prefix."""
     n = len(labels)
-    logprobs = [0.0] * n
-    resps = [None] * n
 
     user_prompt = (
         f"## Context:\n\n{state}\n\n### Question:\n\n{instructions}\n"
@@ -197,12 +238,23 @@ async def score_criteria(
 
     prompt = await client.apply_template(SYSTEM_PROMPT, user_prompt)
 
-    for i in range(n):
-        resps[i] = await client.completion(
+    tokenized = {}
+    for label in labels:
+        if label not in tokenized:
+            tokenized[label] = await client.tokenize(label + "\n")
+    prefixes = distinguishing_prefixes([tokenized[label] for label in labels])
+    scores = {}
+    for tokens in prefixes:
+        key = tuple(tokens)
+        if key in scores:
+            continue
+        result = await client.completion(
             prompt,
             n_probs=1,
-            n_predict=1,
-            grammar=grammar_for(labels[i]),
+            n_predict=len(tokens),
+            grammar=grammar_for(tokens),
+            post_sampling_probs=False,
+            return_tokens=True,
             min_keep=4,
             min_p=0,
             top_p=0,
@@ -213,10 +265,18 @@ async def score_criteria(
             samplers=["min_p", "top_p", "top_k"],
         )
 
-    for i in range(n):
-        logprobs[i] = resps[i]["completion_probabilities"][0]["logprob"]
+        probabilities = result["completion_probabilities"]
+        if result["tokens"] != tokens or len(probabilities) != len(tokens):
+            raise ValueError("Upstream did not generate the complete requested token prefix")
+        values = []
+        for token, probability in zip(tokens, probabilities):
+            value = probability["logprob"]
+            if probability["id"] != token or math.isnan(value) or value > 0:
+                raise ValueError("Invalid pre-sampling token log probability")
+            values.append(value)
+        scores[key] = math.fsum(values)
 
-    return logprobs
+    return [scores[tuple(tokens)] for tokens in prefixes]
 
 
 async def answer_question(client: LlamaClient, state: str, q: dict) -> dict:

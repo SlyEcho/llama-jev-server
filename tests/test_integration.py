@@ -71,6 +71,40 @@ class LiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(score["legend"], {"0": "Poor", "1": "Good"})
         self.assertAlmostEqual(score["score"], score["probabilities"]["1"])
 
+    async def test_shared_prefixes_and_duplicate_labels(self):
+        answers = await self.ask({
+            "shared": {
+                "type": "choice", "instructions": "Which description matches?",
+                "criteria": {"red": "The red apple", "blue": "The blue apple"},
+            },
+            "prefix": {
+                "type": "choice", "instructions": "Choose the most complete description.",
+                "criteria": {"short": "Red", "long": "Red apple", "duplicate": "Red apple"},
+            },
+        })
+        self.assert_distribution(answers["shared"], ["red", "blue"])
+        self.assert_distribution(answers["prefix"], ["short", "long", "duplicate"])
+        self.assertEqual(
+            answers["prefix"]["probabilities"]["long"],
+            answers["prefix"]["probabilities"]["duplicate"],
+        )
+
+    async def test_numeric_grammar_for_newline_terminated_tokens(self):
+        async with asyncio.timeout(180), server.LlamaClient(server.DEFAULT_MODEL) as client:
+            tokens = await client.tokenize("Red\n")
+            prompt = await client.apply_template(server.SYSTEM_PROMPT, "Answer Red.")
+            result = await client.completion(
+                prompt, grammar=server.grammar_for(tokens), n_predict=len(tokens),
+                n_probs=1, post_sampling_probs=False, return_tokens=True,
+            )
+        self.assertEqual(result["tokens"], tokens)
+        self.assertEqual(result["content"], "Red\n")
+        probabilities = result["completion_probabilities"]
+        self.assertEqual([entry["id"] for entry in probabilities], tokens)
+        for entry in probabilities:
+            self.assertTrue(math.isfinite(entry["logprob"]))
+            self.assertLessEqual(entry["logprob"], 0)
+
     async def test_alias_and_single_choice(self):
         answers = await self.ask({
             "only": {"type": "choice", "instructions": ["Select the available answer"], "criteria": {"Yes": None}},

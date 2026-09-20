@@ -46,6 +46,29 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         }))
         self.assertEqual((client.input_tokens, client.cached_tokens, client.output_tokens), (12, 8, 1))
 
+    async def test_tokenization_request(self):
+        import json
+
+        def handler(request):
+            self.assertEqual(request.url.path, "/tokenize")
+            self.assertEqual(json.loads(request.content), {
+                "model": "test-model", "content": "Red apple\n",
+                "add_special": False, "parse_special": False,
+            })
+            return httpx.Response(200, json={"tokens": [1, 2, 10]})
+
+        client = await self.make_client(handler)
+        self.assertEqual(await client.tokenize("Red apple\n"), [1, 2, 10])
+
+    async def test_invalid_tokenization_response(self):
+        for tokens in ([], [True], [-1], ["1"], [{"id": 1}], None):
+            with self.subTest(tokens=tokens):
+                client = await self.make_client(
+                    lambda request: httpx.Response(200, json={"tokens": tokens})
+                )
+                with self.assertRaises(ValueError):
+                    await client.tokenize("label\n")
+
     async def test_gpt_oss_template_is_local(self):
         def handler(request):
             self.fail("GPT-OSS template should not make an HTTP request")
@@ -62,6 +85,8 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             await client.completion("prompt")
         with self.assertRaises(httpx.HTTPStatusError):
             await client.apply_template("system", "user")
+        with self.assertRaises(httpx.HTTPStatusError):
+            await client.tokenize("label\n")
 
     async def test_counters_preserve_cache_maximum(self):
         client = await self.make_client(lambda request: httpx.Response(200))
