@@ -2,6 +2,8 @@
 
 This is kind of a hack to see if local models can also give decision probabilities from their logits.
 
+For API reference, check out the [Typesafe API docs](https://docs.typesafe.ai/concepts/system-one).
+
 ## Example request
 
 Configure the upstream llama server using `.env` (see `.env.example`), then start
